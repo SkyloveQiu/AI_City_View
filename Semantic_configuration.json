@@ -1,0 +1,253 @@
+[
+  {
+    "name": "Sky",
+    "color": "#06E6E6",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Lawn",
+    "color": "#04FA07",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Herbaceous",
+    "color": "#FA7F04",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "Trees",
+    "color": "#04C803",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Shrubs",
+    "color": "#CCFF04",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Water",
+    "color": "#0907E6",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Land; Ground",
+    "color": "#787846",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Building",
+    "color": "#B47878",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Rock; stone",
+    "color": "#FF290A",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "People; Individuals; Someone; People and their belongings",
+    "color": "#96053D",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Wall",
+    "color": "#787878",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "Roads",
+    "color": "#8C8C8C",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Pavements; pavement, paths, gravel roads, dirt roads, not vehicle plazas",
+    "color": "#EBFF07",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Bridge",
+    "color": "#FF5200",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Automobiles, cars, motor vehicles, carriages",
+    "color": "#0066C8",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Chairs",
+    "color": "#CC4603",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Bases, plinths, pedestals, bases for sculptures and planters",
+    "color": "#FF1F00",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Steps, curbs (kerbs, berms, stepping stones), hard barges, retaining walls",
+    "color": "#FFE000",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "Fences",
+    "color": "#FFB806",
+    "countable": 0,
+    "openness": 1
+  },
+  {
+    "name": "Signs, plaques",
+    "color": "#FF0599",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Bins",
+    "color": "#AD00FF",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Towers",
+    "color": "#FFB8B8",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Awnings; Shades, Pavilions, Structures",
+    "color": "#00FF3D",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Street Lights, Street Lamps",
+    "color": "#0047FF",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Boat",
+    "color": "#FFEB00",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Fountains",
+    "color": "#08B8AA",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "Bicycles, Pedal Bikes",
+    "color": "#FFF500",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Sculptures, Outdoor Vignettes",
+    "color": "#FFFF00",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Piers, Docks",
+    "color": "#4700FF",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Aquatic plants (on the water)",
+    "color": "#4EFF00",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "Green-covered buildings and structures",
+    "color": "#00FF4E",
+    "countable": 1,
+    "openness": 0
+  },
+  {
+    "name": "Couplets",
+    "color": "#82513E",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Riverbanks",
+    "color": "#E2C8A0",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Hills, mountains",
+    "color": "#8FFF8C",
+    "countable": 0,
+    "openness": 0
+  },
+  {
+    "name": "Construction equipment",
+    "color": "#FF7104",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Poles",
+    "color": "#B5A6AE",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Animal",
+    "color": "#6EDCA7",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Monuments",
+    "color": "#484846",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Doors",
+    "color": "#36283B",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Outdoor sports equipment",
+    "color": "#37393A",
+    "countable": 1,
+    "openness": 1
+  },
+  {
+    "name": "Waterfalls",
+    "color": "#27C4C4",
+    "countable": 0,
+    "openness": 0
+  },
+  { "name": "Pavilion",
+    "color": "#FFD000",
+    "countable": 1,
+    "openness": 1
+  }
+]
