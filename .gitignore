@@ -1,11 +1,42 @@
+# Python
 __pycache__/
-*.pyc
-.venv/
-env/
-venv/
-.idea/
-.DS_Store
-node_modules/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
 dist/
 build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Output directories
+output/
+output_*/
+
+# Temporary files
+*.tmp
+*.bak
+.DS_Store
+
+# Logs
 *.log
+
+# Model cache
+.cache/
+models/
+
+# Data
+input/*.jpg
+input/*.png
+!input/.gitkeep

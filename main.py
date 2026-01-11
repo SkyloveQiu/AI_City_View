@@ -1,18 +1,20 @@
 """
-视觉分析Pipeline - 主入口
-处理1张输入图片，生成20张输出图片
+视觉分析Pipeline - 单图处理主入口
+处理1张全景图，自动分割为前后两部分，每部分生成21张输出图片
+支持多线程批处理（GPU操作使用线程锁保护）
 """
 
 import sys
-import os
-import json
+import cv2
+import time
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Any, Dict
+import numpy as np
 
-# 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from pipeline.stage1_preprocess_single import stage1_preprocess_single as stage1_preprocess
+from pipeline.stage1_preprocess import crop_and_split_panorama
 from pipeline.stage2_ai_inference import stage2_ai_inference
 from pipeline.stage3_postprocess import stage3_postprocess
 from pipeline.stage4_depth_layering import stage4_depth_layering
@@ -20,358 +22,204 @@ from pipeline.stage5_openness import stage5_openness
 from pipeline.stage6_generate_images import stage6_generate_images
 from pipeline.stage7_save_outputs import stage7_save_outputs
 
-
-def _hex_to_bgr(hex_color: str) -> Tuple[int, int, int]:
-    s = str(hex_color).strip()
-    if s.startswith('#'):
-        s = s[1:]
-    if len(s) != 6:
-        raise ValueError(f"颜色必须是 #RRGGBB 格式，当前={hex_color!r}")
-    try:
-        r = int(s[0:2], 16)
-        g = int(s[2:4], 16)
-        b = int(s[4:6], 16)
-    except ValueError as e:
-        raise ValueError(f"颜色必须是 #RRGGBB 格式，当前={hex_color!r}") from e
-    return (b, g, r)
+# GPU操作的全局锁（确保多线程时GPU安全）
+_gpu_lock = threading.Lock()
+from pipeline.stage7_save_outputs import stage7_save_outputs
 
 
-def load_semantic_configuration(config_path: str | Path) -> Dict[str, Any]:
-    """Load Semantic_configuration.json.
-
-    Expected format: a JSON list of objects:
-      {"name": str, "color": "#RRGGBB", "openness": 0|1, "countable": 0|1(optional)}
-
-        Returns config keys compatible with the pipeline:
-            - semantic_items: List[dict] raw items (name/openness/bgr) for mapping
-            - classes: List[str] prompt classes for LangSAM (class_id 1..N)
-            - openness_config: List[int] where index == class_id (0 is background)
-            - colors: Dict[int, (b,g,r)] OpenCV BGR colors where key == class_id (0 is background)
-    """
-    p = Path(config_path).expanduser()
-    data = json.loads(p.read_text(encoding='utf-8'))
-    if not isinstance(data, list):
-        raise ValueError(f"语义配置必须是 JSON 数组(list)，当前类型={type(data).__name__}")
-
-    # IMPORTANT:
-    # - LangSAM prompt loop uses enumerate(classes, start=1) -> class_id 1..N
-    # - Background is always semantic id 0 and must NOT be part of the prompt list.
-    classes: List[str] = []
-    openness_config: List[int] = [0]
-    colors: Dict[int, Tuple[int, int, int]] = {0: (0, 0, 0)}
-    semantic_items: List[Dict[str, Any]] = []
-
-    for idx, item in enumerate(data, start=1):
-        if not isinstance(item, dict):
-            raise ValueError(f"语义配置第{idx}项必须是对象(dict)，当前={type(item).__name__}")
-
-        name = str(item.get('name', '')).strip()
-        if not name:
-            raise ValueError(f"语义配置第{idx}项缺少 name")
-
-        openness = item.get('openness', 0)
-        try:
-            openness_i = int(openness)
-        except Exception as e:
-            raise ValueError(f"语义配置第{idx}项 openness 必须是0或1，当前={openness!r}") from e
-        if openness_i not in (0, 1):
-            raise ValueError(f"语义配置第{idx}项 openness 必须是0或1，当前={openness!r}")
-
-        color = item.get('color', None)
-        if color is None:
-            raise ValueError(f"语义配置第{idx}项缺少 color")
-        bgr = _hex_to_bgr(str(color))
-
-        classes.append(name)
-        openness_config.append(openness_i)
-        colors[len(classes)] = bgr
-        semantic_items.append({'name': name, 'openness': openness_i, 'bgr': bgr})
-
+def get_default_config() -> Dict[str, Any]:
+    """获取默认配置"""
+    import json
+    config_path = Path(__file__).parent / "Semantic_configuration.json"
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        semantic_config = json.load(f)
+    
     return {
-        'semantic_items': semantic_items,
-        'classes': classes,
-        'openness_config': openness_config,
-        'colors': colors,
-    }
-
-
-def get_default_config() -> dict:
-    config: Dict[str, Any] = {
-        # 语义分割：OneFormer + ADE20K 150类标准
-        # - 输出 semantic_map 为 uint8，类别 ID 为 0..149 (与模型输出一致)
-        'semantic_backend': 'oneformer_ade20k',
-        'oneformer_model_id': 'shi-labs/oneformer_ade20k_swin_large',
-        # Visualization: use ADE20K official palette for OneFormer outputs
-        'use_ade20k_palette': True,
-        # openness/classes/colors 在 ADE20K 150 类场景下建议按需配置；默认留空表示“未指定”。
-        'classes': [],
-        'openness_config': [],
-        'colors': None,
-        'encoder': 'vitb',
-        'enable_hole_filling': True,
-        'hole_fill_kernel_size': 5,
-        'enable_median_blur': True,
-        'blur_kernel_size': 5,
         'split_method': 'percentile',
-        'fg_ratio': 0.33,
-        'bg_ratio': 0.33,
-        # PNG压缩等级：0最快(文件大)，9最慢(文件小)
-        'png_compression': 3,
-        # 性能分析：设置环境变量 PIPELINE_PROFILE=1 启用
-        'profile': os.environ.get('PIPELINE_PROFILE', '0') == '1',
+        'semantic_config': semantic_config,
     }
 
-    # Optional override: force backend (preferred way to switch between OneFormer/LangSAM)
-    backend_override = str(os.environ.get('PIPELINE_SEMANTIC_BACKEND', '')).strip()
-    if backend_override:
-        config['semantic_backend'] = backend_override
 
-    # If a custom semantic config exists, prefer using it (LangSAM backend).
-    # Override path via env: PIPELINE_SEMANTIC_CONFIG=/path/to/Semantic_configuration.json
-    semantic_cfg_env = str(os.environ.get('PIPELINE_SEMANTIC_CONFIG', '')).strip()
-    semantic_cfg_path = Path(semantic_cfg_env).expanduser() if semantic_cfg_env else (Path(__file__).parent / 'Semantic_configuration.json')
-    if semantic_cfg_path.exists():
-        try:
-            loaded = load_semantic_configuration(semantic_cfg_path)
-            # Always keep raw items for OneFormer(ADE20K) name->id mapping.
-            config['semantic_items'] = loaded.get('semantic_items', [])
-            # For LangSAM backend, also apply prompt-based ids (1..N) colors/openness.
-            if str(config.get('semantic_backend', '')).strip().lower() == 'langsam':
-                config.update({
-                    'classes': loaded.get('classes', []),
-                    'openness_config': loaded.get('openness_config', []),
-                    'colors': loaded.get('colors', None),
-                })
-            config['semantic_config_path'] = str(semantic_cfg_path)
-        except Exception as e:
-            print(f"警告: 读取语义配置失败，将继续使用默认配置: {semantic_cfg_path} ({e})")
-
-    return config
-
-def process_image_pipeline(image_path, output_dir, config):
+def process_half_image(
+    image_data: np.ndarray,
+    basename: str,
+    output_dir: str,
+    config: Dict[str, Any]
+) -> Dict[str, Any]:
     """
-    完整的7阶段Pipeline
-    
-    参数:
-        image_path: str - 输入图片路径
-        output_dir: str - 输出目录
-        config: dict - 配置参数
-    
-    返回:
-        result: dict - 处理结果
+    处理单个半图（前半部分或后半部分）
     """
-    import time
-    start_time = time.time()
-    profile = bool(config.get('profile', False))
-    timings = {}
-
-    def _tic(label: str):
-        if profile:
-            timings[label] = {'start': time.perf_counter()}
-
-    def _toc(label: str):
-        if profile and label in timings and 'start' in timings[label]:
-            timings[label]['seconds'] = time.perf_counter() - timings[label]['start']
+    height, width = image_data.shape[:2]
     
-    try:
-        payload = process_image_pipeline_stage1_to_5(image_path, output_dir, config, _tic=_tic, _toc=_toc)
-        print("阶段6: 生成20张输出图片...")
-        _tic('stage6')
-        stage6_result = stage6_generate_images(
-            payload['original_copy'],
-            payload['semantic_map_processed'],
-            payload['depth_map'],
-            payload['openness_map'],
-            payload['fg_mask'], payload['mg_mask'], payload['bg_mask'],
-            config,
-        )
-        _toc('stage6')
-        all_images = stage6_result['images']
-        print(f"  已生成 {len(all_images)} 张图片")
-
-        print("阶段7: 保存输出...")
-        _tic('stage7')
-        stage7_result = stage7_save_outputs(
-            all_images,
-            payload['output_dir'],
-            payload['image_basename'],
-            payload['metadata'],
-        )
-        _toc('stage7')
-
-        duration = time.time() - start_time
-        print(f"\n✅ 处理完成! 耗时: {duration:.2f}秒")
-        print(f"输出目录: {payload['output_dir']}")
-        print(f"生成文件: {len(stage7_result['saved_files'])} 个")
-
-        if profile:
-            print("\n⏱️  分阶段耗时:")
-            for k in ['stage1', 'stage2', 'stage3', 'stage4', 'stage5', 'stage6', 'stage7']:
-                if k in timings and 'seconds' in timings[k]:
-                    print(f"  {k}: {timings[k]['seconds']:.3f}s")
-
-        return {
-            'success': True,
-            'output_dir': payload['output_dir'],
-            'saved_files': stage7_result['saved_files'],
-            'metadata': payload['metadata'],
-            'duration_seconds': duration,
+    # Stage1数据（直接使用传入的图片数据）
+    stage1_data = {
+        'original': image_data,
+        'original_copy': image_data.copy(),
+        'height': height,
+        'width': width,
+        'metadata': {
+            'basename': basename,
+            'width': width,
+            'height': height,
         }
+    }
+    
+    # Stage 2: AI推理（使用GPU锁保护）
+    print("  Stage 2: AI推理...")
+    with _gpu_lock:
+        stage2_result = stage2_ai_inference(stage1_data['original'], config)
+    
+    # Stage 3: 后处理
+    print("  Stage 3: 后处理...")
+    stage3_result = stage3_postprocess(
+        stage2_result['semantic_map'],
+        config
+    )
+    
+    # 将depth_map添加到stage3_result中
+    stage3_result['depth_map'] = stage2_result['depth_map']
+    
+    # Stage 4: 景深分层
+    print("  Stage 4: 景深分层...")
+    stage4_result = stage4_depth_layering(
+        stage3_result['depth_map'],
+        config
+    )
+    
+    # Stage 5: 开放度计算
+    print("  Stage 5: 开放度计算...")
+    stage5_result = stage5_openness(
+        stage3_result['semantic_map_processed'],
+        config
+    )
+    
+    # 将mask数据添加到stage5_result中
+    stage5_result['foreground_mask'] = stage4_result['foreground_mask']
+    stage5_result['middleground_mask'] = stage4_result['middleground_mask']
+    stage5_result['background_mask'] = stage4_result['background_mask']
+    
+    # Stage 6: 生成图片
+    print("  Stage 6: 生成图片...")
+    stage6_result = stage6_generate_images(
+        stage1_data['original_copy'],
+        stage3_result['semantic_map_processed'],
+        stage3_result['depth_map'],
+        stage5_result['openness_map'],
+        stage5_result['foreground_mask'],
+        stage5_result['middleground_mask'],
+        stage5_result['background_mask'],
+        config
+    )
+    
+    # Stage 7: 保存输出
+    print("  Stage 7: 保存输出...")
+    stage7_result = stage7_save_outputs(
+        stage6_result['images'],
+        output_dir,
+        basename,
+        stage1_data['metadata']
+    )
+    
+    return {
+        'success': True,
+        'output_dir': output_dir,
+        'saved_files': stage7_result.get('saved_files', [])
+    }
 
-    except Exception as e:
-        import traceback
-        error_msg = f"处理失败: {str(e)}\n{traceback.format_exc()}"
-        print(f"\n❌ {error_msg}")
-        return {
-            'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc(),
-        }
 
-
-def process_image_pipeline_stage1_to_5(
+def process_panorama(
     image_path: str,
     output_dir: str,
-    config: Dict[str, Any],
-    *,
-    _tic=None,
-    _toc=None,
+    config: Dict[str, Any] = None
 ) -> Dict[str, Any]:
-    """Run stages 1..5 and return a payload for deferred stage6+7.
-
-    This is used by batch mode to overlap GPU inference (stage2) with CPU-bound
-    generation/saving (stage6/7).
     """
-    def _noop(_label: str):
-        return None
-    tic = _tic or _noop
-    toc = _toc or _noop
-
-    import time
+    处理单张全景图：分割并处理前后两部分
+    """
+    if config is None:
+        config = get_default_config()
+    
     start_time = time.time()
-
-    print(f"开始处理: {image_path}")
-
-    # ========== 阶段1: 预处理 ==========
-    print("阶段1: 图片预处理...")
-    tic('stage1')
-    stage1_result = stage1_preprocess(image_path)
-    toc('stage1')
-    original = stage1_result['original']
-    original_copy = stage1_result['original_copy']
-    H, W = stage1_result['height'], stage1_result['width']
-    print(f"  图片尺寸: {W}x{H}")
-
-    # ========== 阶段2: AI推理 ==========
-    print("阶段2: AI模型推理...")
-    tic('stage2')
-    stage2_result = stage2_ai_inference(original, config)
-    toc('stage2')
-    semantic_map = stage2_result['semantic_map']
-    depth_map = stage2_result['depth_map']
-    print(f"  语义分割完成, 类别数: {semantic_map.max()}")
-    print(f"  深度估计完成, 范围: [{depth_map.min()}, {depth_map.max()}]")
-
-    # ========== 阶段3: 后处理 ==========
-    print("阶段3: 后处理优化...")
-    tic('stage3')
-    stage3_result = stage3_postprocess(semantic_map, config)
-    toc('stage3')
-    semantic_map_processed = stage3_result['semantic_map_processed']
-    print(f"  空洞填充: {stage3_result.get('processing_stats', {}).get('holes_filled', 0)} 像素")
-
-    # ========== 阶段4: 景深分层 ==========
-    print("阶段4: 景深分层...")
-    tic('stage4')
-    stage4_result = stage4_depth_layering(depth_map, config)
-    toc('stage4')
-    fg_mask = stage4_result['foreground_mask']
-    mg_mask = stage4_result['middleground_mask']
-    bg_mask = stage4_result['background_mask']
-    print(f"  前景: {stage4_result['layer_stats']['foreground_percent']:.1f}%")
-    print(f"  中景: {stage4_result['layer_stats']['middleground_percent']:.1f}%")
-    print(f"  背景: {stage4_result['layer_stats']['background_percent']:.1f}%")
-
-    # ========== 阶段5: 开放度计算 ==========
-    print("阶段5: 开放度计算...")
-    tic('stage5')
-    stage5_result = stage5_openness(semantic_map_processed, config)
-    toc('stage5')
-    openness_map = stage5_result['openness_map']
-    print(f"  开放度: {stage5_result['openness_stats']['openness_ratio']:.1%}")
-
-    metadata = {
-        'input': stage1_result['metadata'],
-        'config': config,
-        'statistics': {
-            'semantic': stage3_result.get('processing_stats', {}),
-            'layers': stage4_result['layer_stats'],
-            'openness': stage5_result['openness_stats'],
-        },
-        'processing_time': {
-            'start': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time)),
-            'end': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'duration_seconds': time.time() - start_time,
-        },
-    }
-
+    image_path_obj = Path(image_path)
+    basename = image_path_obj.stem
+    
+    print(f"\n{'='*60}")
+    print(f"处理全景图: {image_path_obj.name}")
+    print(f"{'='*60}")
+    
+    # 读取原始图片
+    print("步骤1: 读取全景图...")
+    original = cv2.imread(str(image_path_obj))
+    if original is None:
+        return {'success': False, 'error': f'无法读取图片: {image_path}'}
+    
+    height, width = original.shape[:2]
+    print(f"  原始尺寸: {width}x{height}")
+    
+    # 裁剪并分割
+    print("\n步骤2: 裁剪并分割全景图...")
+    front_half, back_half = crop_and_split_panorama(original, bottom_crop_ratio=0.3803)
+    print(f"  前半部分: {front_half.shape[1]}x{front_half.shape[0]}")
+    print(f"  后半部分: {back_half.shape[1]}x{back_half.shape[0]}")
+    
+    # 创建输出目录
+    output_path = Path(output_dir)
+    front_output = output_path / f"{basename}_front"
+    back_output = output_path / f"{basename}_back"
+    front_output.mkdir(parents=True, exist_ok=True)
+    back_output.mkdir(parents=True, exist_ok=True)
+    
+    # 处理前半部分
+    print("\n步骤3: 处理前半部分 (0-180°)...")
+    t1 = time.time()
+    front_result = process_half_image(
+        front_half,
+        f"{basename}_front",
+        str(front_output),
+        config
+    )
+    front_time = time.time() - t1
+    print(f"  ✅ 前半部分完成 ({front_time:.2f}秒)")
+    
+    # 处理后半部分
+    print("\n步骤4: 处理后半部分 (180-360°)...")
+    t2 = time.time()
+    back_result = process_half_image(
+        back_half,
+        f"{basename}_back",
+        str(back_output),
+        config
+    )
+    back_time = time.time() - t2
+    print(f"  ✅ 后半部分完成 ({back_time:.2f}秒)")
+    
+    total_time = time.time() - start_time
+    print(f"\n✅ 全部完成！总耗时: {total_time:.2f}秒")
+    
     return {
+        'success': True,
         'output_dir': output_dir,
-        'image_basename': Path(image_path).stem,
-        'metadata': metadata,
-        'original_copy': original_copy,
-        'semantic_map_processed': semantic_map_processed,
-        'depth_map': depth_map,
-        'openness_map': openness_map,
-        'fg_mask': fg_mask,
-        'mg_mask': mg_mask,
-        'bg_mask': bg_mask,
-    }
-
-
-def process_image_pipeline_stage6_to_7(payload: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
-    """Run stages 6..7 from a payload produced by stage1..5."""
-    stage6_result = stage6_generate_images(
-        payload['original_copy'],
-        payload['semantic_map_processed'],
-        payload['depth_map'],
-        payload['openness_map'],
-        payload['fg_mask'], payload['mg_mask'], payload['bg_mask'],
-        config,
-    )
-    all_images = stage6_result['images']
-    stage7_result = stage7_save_outputs(
-        all_images,
-        payload['output_dir'],
-        payload['image_basename'],
-        payload['metadata'],
-    )
-    return {
-        'output_dir': payload['output_dir'],
-        'saved_files': stage7_result.get('saved_files', []),
-        'metadata': payload['metadata'],
-        'success': bool(stage7_result.get('success', False)),
-        'errors': stage7_result.get('errors', []),
+        'front_output': str(front_output),
+        'back_output': str(back_output),
+        'total_time': total_time,
+        'front_time': front_time,
+        'back_time': back_time
     }
 
 
 if __name__ == '__main__':
-    config = get_default_config()
+    if len(sys.argv) < 3:
+        print("用法: python main.py <图片路径> <输出目录>")
+        print("示例: python main.py input/panorama.jpg output")
+        sys.exit(1)
     
-    # 示例使用
-    if len(sys.argv) > 1:
-        image_path = sys.argv[1]
-        output_dir = sys.argv[2] if len(sys.argv) > 2 else 'output'
-        
-        result = process_image_pipeline(image_path, output_dir, config)
-        
-        if result['success']:
-            print("\n处理成功!")
-        else:
-            print(f"\n处理失败: {result['error']}")
-            sys.exit(1)
-    else:
-        print("用法: python main.py <图片路径> [输出目录]")
-        print("示例: python main.py input/photo.jpg output/")
+    image_path = sys.argv[1]
+    output_dir = sys.argv[2]
+    
+    result = process_panorama(image_path, output_dir)
+    
+    if not result['success']:
+        print(f"\n❌ 处理失败: {result.get('error', 'Unknown error')}")
+        sys.exit(1)
 
 
