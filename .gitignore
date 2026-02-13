@@ -42,3 +42,7 @@ input/*.jpg
 input/*.png
 !input/.gitkeep
 data/
+
+# Large model files
+checkpoints/
+*.zip
