@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(python -c:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(pip:*)",
+      "WebSearch",
+      "mcp__ide__getDiagnostics",
+      "Bash(PYTHONIOENCODING=utf-8 python -u -c:*)",
+      "Bash(tasklist:*)",
+      "Bash(conda create:*)",
+      "Bash(conda run:*)",
+      "Bash(PYTHONIOENCODING=utf-8 D:/mini-conda/envs/cityview/python.exe:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(D:/mini-conda/envs/cityview/python.exe:*)",
+      "Bash(kill:*)",
+      "Bash(done)"
+    ]
+  }
+}
