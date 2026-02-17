@@ -551,7 +551,7 @@ def _depth_estimation_v3(image: np.ndarray, config: Dict[str, Any]):
 def _refine_sky_gaps(
     depth_metric: np.ndarray,
     sky_mask: np.ndarray,
-    depth_percentile: float = 90,
+    depth_percentile: float = 85,
     dilate_kernel_size: int = 21,
     dilate_iterations: int = 2,
     max_rounds: int = 5,
@@ -588,13 +588,17 @@ def _refine_sky_gaps(
 
     depth_thresh = float(np.percentile(finite_non_sky, depth_percentile))
 
+    # ---- Precompute HSV channels (reused by guard + color detection) ----
+    h = s = v = None
+    if image_bgr is not None and image_bgr.ndim == 3:
+        hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+
     # ---- Build guard mask: pixels that should NEVER become sky ----
     guard = np.zeros((H, W), dtype=bool)
 
     # Color guard: reject green vegetation and dark pixels
-    if image_bgr is not None and image_bgr.ndim == 3:
-        hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    if h is not None:
         green_veg = (h >= 30) & (h <= 80) & (s >= 40)
         dark = (v < 80)
         guard |= green_veg | dark
@@ -608,12 +612,41 @@ def _refine_sky_gaps(
         for cls_id in _NEVER_SKY_IDS:
             guard |= (semantic_map == cls_id)
 
-    # ---- Iterative dilation (same aggressive reach as before) ----
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (dilate_kernel_size, dilate_kernel_size))
-
+    # ---- Pass 1: Color+depth direct detection (no dilation needed) ----
+    # Catches isolated sky gaps surrounded by green canopy that dilation
+    # can never reach through. Uses stricter depth threshold (p95).
     current_sky = sky_mask.copy()
     total_added = 0
+
+    if h is not None:
+        p95 = float(np.percentile(finite_non_sky, 95))
+
+        # Sky-like colors: blue, cyan, gray/overcast, bright white
+        blue_sky = (h >= 90) & (h <= 135) & (s >= 20) & (s <= 200) & (v >= 100)
+        cyan_sky = (h >= 80) & (h < 90) & (s >= 20) & (s <= 150) & (v >= 140)
+        gray_sky = (s <= 25) & (v >= 150) & (v <= 240)
+        bright_white = (s <= 30) & (v >= 200)
+        sky_color = blue_sky | cyan_sky | gray_sky | bright_white
+
+        # Upper 60% of image only
+        upper_mask = np.zeros((H, W), dtype=bool)
+        upper_mask[:int(H * 0.6), :] = True
+
+        color_sky = (
+            sky_color
+            & upper_mask
+            & (depth_metric > p95)
+            & ~current_sky
+            & ~guard
+        )
+        color_added = int(color_sky.sum())
+        if color_added > 0:
+            current_sky |= color_sky
+            total_added += color_added
+
+    # ---- Pass 2: Iterative dilation (aggressive reach into gaps) ----
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (dilate_kernel_size, dilate_kernel_size))
 
     for _round in range(max_rounds):
         sky_nearby = cv2.dilate(
@@ -621,7 +654,6 @@ def _refine_sky_gaps(
             iterations=dilate_iterations,
         ) > 0
 
-        # Same depth + proximity check, but now also reject guarded pixels
         gap_pixels = (
             (depth_metric > depth_thresh)
             & sky_nearby
