@@ -165,10 +165,39 @@ def process_half_image(
         enhanced_metadata['fmb_thresholds'] = stage4_result['depth_thresholds']
     if 'layer_stats' in stage4_result:
         enhanced_metadata['fmb_layer_stats'] = stage4_result['layer_stats']
-    # 颜色图例 (固定映射)
+    # 颜色图例 (固定映射) + 全色阶对应表
     if depth_metric is not None:
         fg_max = float(config.get('fmb_foreground_max', 10.0))
         mg_max = float(config.get('fmb_middleground_max', 50.0))
+
+        # 生成完整色阶对应表: 每1米一个条目 (0-100m) + sky
+        # 与 stage6._colorize_depth_metric 使用相同的分段线性插值
+        color_scale = []
+        max_far = 100.0
+        for m in range(int(max_far) + 1):
+            d = float(m)
+            if d < fg_max:
+                t = d / fg_max
+                b, g, r = int(0), int(t * 255), int(180 + t * 75)
+            elif d < mg_max:
+                t = (d - fg_max) / (mg_max - fg_max)
+                b, g, r = int(t * 255), 255, int(255 - t * 255)
+            else:
+                t = min((d - mg_max) / (max_far - mg_max), 1.0)
+                b, g, r = int(255 - t * 75), int(255 - t * 255), 0
+            b, g, r = max(0, min(255, b)), max(0, min(255, g)), max(0, min(255, r))
+            hex_color = f'#{r:02X}{g:02X}{b:02X}'
+            color_scale.append({
+                'meters': m,
+                'rgb': [r, g, b],
+                'hex': hex_color,
+            })
+        color_scale.append({
+            'meters': 'sky',
+            'rgb': [255, 255, 255],
+            'hex': '#FFFFFF',
+        })
+
         enhanced_metadata['depth_color_legend'] = {
             'scheme': 'fixed_metric',
             'segments': [
@@ -176,7 +205,8 @@ def process_half_image(
                 {'range': f'{fg_max}-{mg_max}m', 'label': 'middleground', 'color_start': '#FFFF00', 'color_end': '#00FFFF'},
                 {'range': f'>{mg_max}m', 'label': 'background', 'color_start': '#00FFFF', 'color_end': '#B40000'},
                 {'range': 'sky', 'label': 'sky', 'color': '#FFFFFF'},
-            ]
+            ],
+            'color_scale': color_scale,
         }
 
     # 额外输出: sky_mask (白=天空, 黑=非天空) + 原始语义 class ID
