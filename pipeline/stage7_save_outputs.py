@@ -1,7 +1,7 @@
 """pipeline.stage7_save_outputs
 
 阶段7: 保存输出
-功能: 保存20张PNG图片和元数据JSON
+功能: 保存23张PNG图片和元数据JSON
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def stage7_save_outputs(
     阶段7: 保存输出
 
     参数:
-        images: Dict[str, np.ndarray] - 来自阶段6的20张图片
+        images: Dict[str, np.ndarray] - 来自阶段6的23张图片
         output_dir: str - 输出目录路径
         image_basename: str - 原图文件名（不含扩展名）
         metadata: dict - 处理元数据
@@ -52,6 +52,8 @@ def stage7_save_outputs(
         'openness_foreground', 'openness_middleground', 'openness_background',
         # 原图分层
         'original_foreground', 'original_middleground', 'original_background',
+        # FMB分层
+        'fmb_foreground', 'fmb_middleground', 'fmb_background',
     ]
 
     saved_files: List[str] = []
