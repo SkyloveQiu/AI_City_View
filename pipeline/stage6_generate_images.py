@@ -24,6 +24,7 @@ def stage6_generate_images(
     middleground_mask: np.ndarray,
     background_mask: np.ndarray,
     config: Dict[str, Any],
+    depth_metric: np.ndarray = None,
 ) -> Dict[str, Any]:
     """阶段6: 生成20张图片（按 plan.md 的固定 key 集合）。"""
     _validate_inputs(
@@ -44,7 +45,14 @@ def stage6_generate_images(
         colors = ade20k_palette_bgr_dict(int(semantic_map.max()))
 
     semantic_colored = _colorize_semantic(semantic_map, colors, oneformer=backend.startswith('oneformer'))
-    depth_colored = _colorize_depth(depth_map, colormap=str(config.get('depth_colormap', 'INFERNO')))
+
+    # 如果有度量深度，使用固定米数→颜色映射；否则回退到传统 colormap
+    if depth_metric is not None:
+        fg_max = float(config.get('fmb_foreground_max', 10.0))
+        mg_max = float(config.get('fmb_middleground_max', 50.0))
+        depth_colored = _colorize_depth_metric(depth_metric, fg_max, mg_max)
+    else:
+        depth_colored = _colorize_depth(depth_map, colormap=str(config.get('depth_colormap', 'INFERNO')))
     openness_colored = _colorize_openness(openness_map)
     fmb_colored = _create_fmb_visualization(foreground_mask, middleground_mask, background_mask)
 
@@ -148,12 +156,69 @@ def _colorize_semantic(semantic_map: np.ndarray, colors: Mapping[int, Any] | Non
 
 
 def _colorize_depth(depth_map: np.ndarray, colormap: str = 'INFERNO') -> np.ndarray:
+    """传统 uint8 深度图着色 (回退方案)"""
     cmap = colormap.strip().upper()
     if cmap == 'JET':
         return cv2.applyColorMap(depth_map, cv2.COLORMAP_JET)
     if cmap == 'VIRIDIS':
         return cv2.applyColorMap(depth_map, cv2.COLORMAP_VIRIDIS)
     return cv2.applyColorMap(depth_map, cv2.COLORMAP_INFERNO)
+
+
+def _colorize_depth_metric(
+    depth_metric: np.ndarray,
+    fg_max: float = 10.0,
+    mg_max: float = 50.0,
+) -> np.ndarray:
+    """固定米数→颜色映射 (BGR格式)
+
+    颜色方案 (确定性映射，不随图片变化):
+        0m   → 深红 (0, 0, 180)
+        10m  → 黄色 (0, 255, 255)   前/中景分界
+        50m  → 青色 (255, 255, 0)   中/背景分界
+        100m → 深蓝 (180, 0, 0)
+        天空 → 白色 (255, 255, 255)
+    """
+    H, W = depth_metric.shape
+    colored = np.zeros((H, W, 3), dtype=np.uint8)
+
+    is_sky = np.isinf(depth_metric)
+    depth_clamped = np.clip(depth_metric, 0, 100.0)
+
+    # 分段线性插值 (BGR)
+    # 段1: 0-10m  深红→黄
+    # 段2: 10-50m 黄→青
+    # 段3: 50-100m 青→深蓝
+
+    # 段1: 0 ~ fg_max
+    seg1 = depth_clamped < fg_max
+    if np.any(seg1):
+        t = depth_clamped[seg1] / fg_max  # 0→1
+        colored[seg1, 0] = (0 + t * 0).astype(np.uint8)           # B: 0→0
+        colored[seg1, 1] = (0 + t * 255).astype(np.uint8)         # G: 0→255
+        colored[seg1, 2] = (180 + t * 75).astype(np.uint8)        # R: 180→255
+
+    # 段2: fg_max ~ mg_max
+    seg2 = (depth_clamped >= fg_max) & (depth_clamped < mg_max)
+    if np.any(seg2):
+        t = (depth_clamped[seg2] - fg_max) / (mg_max - fg_max)
+        colored[seg2, 0] = (0 + t * 255).astype(np.uint8)         # B: 0→255
+        colored[seg2, 1] = (255 - t * 0).astype(np.uint8)         # G: 255→255
+        colored[seg2, 2] = (255 - t * 255).astype(np.uint8)       # R: 255→0
+
+    # 段3: mg_max ~ 100m
+    max_far = 100.0
+    seg3 = (depth_clamped >= mg_max) & (~is_sky)
+    if np.any(seg3):
+        t = np.clip((depth_clamped[seg3] - mg_max) / (max_far - mg_max), 0, 1)
+        colored[seg3, 0] = (255 - t * 75).astype(np.uint8)        # B: 255→180
+        colored[seg3, 1] = (255 - t * 255).astype(np.uint8)       # G: 255→0
+        colored[seg3, 2] = 0                                       # R: 0
+
+    # 天空: 白色
+    colored[is_sky] = [255, 255, 255]
+
+    return colored
 
 
 def _colorize_openness(openness_map: np.ndarray) -> np.ndarray:
